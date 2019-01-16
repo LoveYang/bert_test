@@ -20,7 +20,12 @@ from __future__ import print_function
 
 import re
 import tensorflow as tf
-
+from tensorflow.python.framework import ops
+from tensorflow.python.ops import  control_flow_ops
+from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import state_ops
+from tensorflow.python.ops import resource_variable_ops
+from tensorflow.python.training import optimizer
 
 def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps):
   """Creates an optimizer training op."""
@@ -169,6 +174,9 @@ class AdamWeightDecayOptimizer(tf.train.Optimizer):
     if m is not None:
       param_name = m.group(1)
     return param_name
+
+
+
 class AdamWeightDecayOptimizer_v2(tf.train.Optimizer):
     """A basic Adam optimizer that includes "correct" L2 weight decay."""
 
@@ -181,7 +189,7 @@ class AdamWeightDecayOptimizer_v2(tf.train.Optimizer):
                  exclude_from_weight_decay=None,
                  name="AdamWeightDecayOptimizer"):
         """Constructs a AdamWeightDecayOptimizer."""
-        super(AdamWeightDecayOptimizer, self).__init__(False, name)
+        super(AdamWeightDecayOptimizer_v2, self).__init__(False, name)
 
         self.learning_rate = learning_rate
         self.weight_decay_rate = weight_decay_rate
@@ -226,7 +234,7 @@ class AdamWeightDecayOptimizer_v2(tf.train.Optimizer):
 
         update = next_m / (tf.sqrt(next_v) + epsilon_t)
 
-        if self._do_use_weight_decay(self._get_variable_name(var)):
+        if self._do_use_weight_decay(self._get_variable_name(var.name)):
             update += weight_decay_rate_t * var
 
         update_with_lr = learning_rate_t * update
@@ -331,3 +339,10 @@ class AdamWeightDecayOptimizer_v2(tf.train.Optimizer):
                 if re.search(r, param_name) is not None:
                     return False
         return True
+
+    def _get_variable_name(self, param_name):
+        """Get the variable name from the tensor name."""
+        m = re.match("^(.*):\\d+$", param_name)
+        if m is not None:
+            param_name = m.group(1)
+        return param_name

@@ -36,7 +36,7 @@ flags.DEFINE_string(
 ## Other parameters
 
 flags.DEFINE_bool(
-    "convert2Tf_record", True,
+    "convert2Tf_record", False,
     "Whether to convert source data to TF_record  ")
 
 # "./chinese_L-12_H-768_A-12/bert_model.ckpt",
@@ -55,12 +55,12 @@ flags.DEFINE_integer(
     "Sequences longer than this will be truncated, and sequences shorter "
     "than this will be padded.")
 
-flags.DEFINE_bool("do_train", True, "Whether to run training.")
+flags.DEFINE_bool("do_train", False, "Whether to run training.")
 
-flags.DEFINE_bool("do_eval", False, "Whether to run eval on the dev set.")
+flags.DEFINE_bool("do_eval", True, "Whether to run eval on the dev set.")
 
 flags.DEFINE_bool(
-    "do_predict", False,
+    "do_predict", True,
     "Whether to run the model in inference mode on the test set.")
 
 flags.DEFINE_integer("train_batch_size", 32, "Total batch size for training.")

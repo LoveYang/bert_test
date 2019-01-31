@@ -28,7 +28,7 @@ cn_token=CN_Token()
 fulltoken=FullTokenizer(os.path.abspath("../../../chinese_L-12_H-768_A-12/vocab.txt"))
 
 # return features
-def token_parse(string,maxtoken_length,maxTarget_length=20,returntype="list"):
+def token_parse(p_value,string,maxtoken_length,maxTarget_length=20,returntype="list",):
     if isinstance(maxtoken_length,np.ndarray):
         maxtoken_length=maxtoken_length[0]
     token_a=fulltoken.tokenize(string)
@@ -63,7 +63,7 @@ def token_parse(string,maxtoken_length,maxTarget_length=20,returntype="list"):
 
         return output_input_index
 
-    output_input_index=random_generate_ml_out(token_a,token_b,maxtoken_length,pvalue=0.5)
+    output_input_index=random_generate_ml_out(token_a,token_b,maxtoken_length,pvalue=p_value)
     features=[]
     def list2INT32Array(lst):
         return np.array(lst,dtype=np.int32)
@@ -80,7 +80,7 @@ def token_parse(string,maxtoken_length,maxTarget_length=20,returntype="list"):
         token_a_copy = ["[CLS]"] + token_a_copy + ["[SEP]"]
 
         if len(single_output) > maxTarget_length - 2:
-            single_output=single_output[:maxtoken_length-2]
+            single_output=single_output[:maxTarget_length-2]
         single_output = ["[CLS]"] + single_output + ["[SEP]"]
 
         input_token_ids=fulltoken.convert_tokens_to_ids(token_a_copy)
@@ -105,7 +105,7 @@ def token_parse(string,maxtoken_length,maxTarget_length=20,returntype="list"):
     return features
 
 
-def save_tfrecord_Features(files,datatype="list"):
+def save_tfrecord_Features(files,datatype="list",p_value=0.5):
     if  (not isinstance(files,list)) and (not isinstance(files,tuple)):
         files=[files]
 
@@ -122,7 +122,7 @@ def save_tfrecord_Features(files,datatype="list"):
                 if line_num>1:
                     assert len(content)==22
                     id=int(content[0])
-                    features_tulpe=token_parse(content[1],maxtoken_length=128,maxTarget_length=10,returntype=datatype)
+                    features_tulpe=token_parse(p_value,content[1],maxtoken_length=128,maxTarget_length=10,returntype=datatype)
                     sentiment_labels=[int(label) for label in content[2:]] if datatype=="list" \
                         else np.array([int(label) for label in content[2:]],dtype=np.int32)
 
@@ -133,6 +133,7 @@ def save_tfrecord_Features(files,datatype="list"):
                         features["input_mask"] = create_int_feature(feature_tulpe[1])
                         features["target_token_ids"] = create_int_feature(feature_tulpe[2])
                         features["target_mask"] = create_int_feature(feature_tulpe[3])
+                        assert len(feature_tulpe[3])==10,"mask:{0},target:{1}".format(len(feature_tulpe[3]),len(feature_tulpe[2]))
                         features["segment_ids"] = create_int_feature(feature_tulpe[4])
                         tf_example = tf.train.Example(features=tf.train.Features(feature=features))
                         writer.write(tf_example.SerializeToString())
@@ -143,24 +144,32 @@ def save_tfrecord_Features(files,datatype="list"):
 
 
 
-def test_tfrecord_save():
+def tfrecord_save():
     from tqdm import tqdm
     files_numlines=collections.defaultdict(set)
-    for f,i in tqdm(save_tfrecord_Features(files_list)):
+    for f,i in tqdm(save_tfrecord_Features(files_list[0])):
         files_numlines[f].add(i)
     for f,i in files_numlines.items():
         print("the file({0}) LinesNumber is {1} ".format(f,max(i)))
 
+def create_predict():
+    from tqdm import tqdm
+    files=["predict.csv"]
+    files_numlines = collections.defaultdict(set)
+    for f,i in tqdm(save_tfrecord_Features(files,p_value=0.1)):
+        files_numlines[f].add(i)
+    for f,i in files_numlines.items():
+        print("the file({0}) LinesNumber is {1} ".format(f,max(i)))
 
-
-
-def test_token():
-    text="""趁着国庆节，一家人在白天在山里玩耍之后，晚上决定吃李记搅团。
-东门外这家店门口停车太难了，根本没空位置，所以停在了旁边的地下停车场。"""
-    print(cn_token.tokenize(text))
-    print(fulltoken.tokenize(text))
-    token_parse(text,128,10)
+#
+# def _testa_token():
+#     text="""趁着国庆节，一家人在白天在山里玩耍之后，晚上决定吃李记搅团。
+# 东门外这家店门口停车太难了，根本没空位置，所以停在了旁边的地下停车场。"""
+#     print(cn_token.tokenize(text))
+#     print(fulltoken.tokenize(text))
+#     token_parse(text,128,10)
 
 
 if __name__=="__main__":
-    test_tfrecord_save()
+    # tfrecord_save()
+    create_predict()

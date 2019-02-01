@@ -5,6 +5,7 @@ import os
 import modeling
 import optimization
 import tokenization
+from tensorflow.python.util import nest
 
 os.environ["CUDA_VISIBLE_DEVICES"] = '0,1,2,3'
 flags = tf.flags
@@ -53,9 +54,9 @@ flags.DEFINE_integer(
     "The maximum total output sequence length after decoder generate"
 )
 
-flags.DEFINE_bool("do_train", True, "Whether to run training.")
+flags.DEFINE_bool("do_train", False, "Whether to run training.")
 
-flags.DEFINE_bool("do_eval", False, "Whether to run eval on the dev set.")
+flags.DEFINE_bool("do_eval", True, "Whether to run eval on the dev set.")
 
 flags.DEFINE_bool(
     "do_predict", False,
@@ -129,7 +130,7 @@ def create_model(bert_config, is_training, input_token_ids, sentiment_labels, in
     label_dim = 20
     label_size = label_dim * 4
     label_hidden_size = bert_config.hidden_size
-
+    tf.logging.info("lstm_decoder building..")
     with tf.variable_scope("encoder_label_embedding"):
         # [label_size,hiddent_size]
         label_embedding_table = tf.get_variable("label_embedding_table", shape=[label_size, label_hidden_size]
@@ -231,69 +232,139 @@ def create_model(bert_config, is_training, input_token_ids, sentiment_labels, in
 
 def create_model_lstm_attention(bert_config, is_training, input_token_ids, sentiment_labels, input_mask, segment_ids,
                  target_token_ids, target_mask, target_start_ids, target_end_ids
-                 , target_seq_length, mode, batch_size, use_one_hot_embeddings):
-    model = modeling.BertModel(
-        config=bert_config,
-        is_training=is_training,
-        input_ids=input_token_ids,
-        input_mask=input_mask,
-        token_type_ids=segment_ids,
-        use_one_hot_embeddings=use_one_hot_embeddings)
+                 , input_seq_length,target_seq_length, mode, batch_size, use_one_hot_embeddings):
+    # model = modeling.BertModel(
+    #     config=bert_config,
+    #     is_training=is_training,
+    #     input_ids=input_token_ids,
+    #     input_mask=input_mask,
+    #     token_type_ids=segment_ids,
+    #     use_one_hot_embeddings=use_one_hot_embeddings)
 
     label_dim = 20
     label_size = label_dim * 4
     label_hidden_size = bert_config.hidden_size
+    tf.logging.info("lstm_attention_decoder building..")
+    eval_mode="beam_search"
+    # eval_mode="basic"
 
-    with tf.variable_scope("encoder_label_embedding"):
-        # [label_size,hiddent_size]
-        label_embedding_table = tf.get_variable("label_embedding_table", shape=[label_size, label_hidden_size]
-                                                , initializer=tf.truncated_normal_initializer(stddev=0.02))
-        sentiment_labels_one_hot = tf.one_hot(sentiment_labels, depth=label_size)  # [batch_size,label_dim,label_size]
-        sentiment_labels_hidden = tf.matmul(
-            tf.reshape(sentiment_labels_one_hot, shape=[batch_size * label_dim, label_size]),
-            label_embedding_table)  # [batch_size*label_dim,hiddent_size]
+    # with tf.variable_scope("encoder_label_embedding"):
+    #     # [label_size,hiddent_size]
+    #     label_embedding_table = tf.get_variable("label_embedding_table", shape=[label_size, label_hidden_size]
+    #                                             , initializer=tf.truncated_normal_initializer(stddev=0.02))
+    #     sentiment_labels_one_hot = tf.one_hot(sentiment_labels, depth=label_size)  # [batch_size,label_dim,label_size]
+    #     sentiment_labels_hidden = tf.matmul(
+    #         tf.reshape(sentiment_labels_one_hot, shape=[batch_size * label_dim, label_size]),
+    #         label_embedding_table)  # [batch_size*label_dim,hiddent_size]
+    #
+    #     sentiment_labels_hidden = tf.reduce_sum(
+    #         tf.reshape(sentiment_labels_hidden, shape=[batch_size, label_dim, label_hidden_size]),
+    #         axis=1)  # [batch_size,hiddent_size]
 
-        sentiment_labels_hidden = tf.reduce_sum(
-            tf.reshape(sentiment_labels_hidden, shape=[batch_size, label_dim, label_hidden_size]),
-            axis=1)  # [batch_size,hiddent_size]
 
-    with tf.variable_scope("encoder_label_bert_attention"):
-        bert_final_state = model.get_sequence_output()  # [batch_size,length,hidden_size]
-        # sentiment_labels_hidden_length = tf.tile(tf.expand_dims(sentiment_labels_hidden, axis=1),
-        #                                          [1, input_seq_length, 1])
-        encoder_state = tf.reduce_sum(bert_final_state,axis=1) + sentiment_labels_hidden
+    with tf.variable_scope("embedding"):
+        encoder_embedding=tf.get_variable("input_embeding",shape=[bert_config.vocab_size,bert_config.hidden_size],dtype=tf.float32)
+        encoder_emb_inp=tf.nn.embedding_lookup(encoder_embedding,input_token_ids)
+
+    with tf.variable_scope("encoder"):
+        encoder_rnn_size=2
+        input_sequence_length=tf.cast(tf.count_nonzero(input_mask,axis=1),dtype=tf.int32)
+        encoder_lstm_cells = tf.nn.rnn_cell.BasicLSTMCell(bert_config.hidden_size)
+        # encoder_cells=tf.nn.rnn_cell.MultiRNNCell(encoder_lstm_cells)
+        encoder_cells=encoder_lstm_cells
+        encoder_initial_state=encoder_cells.zero_state(batch_size,tf.float32)
+        encoder_outputs,encoder_state=tf.nn.dynamic_rnn(encoder_cells,encoder_emb_inp,initial_state=encoder_initial_state,sequence_length=input_sequence_length)
+        encoder_state_seq=encoder_outputs
+
+    # with tf.variable_scope("encoder_label_bert_attention"):
+    #     bert_final_state = model.get_sequence_output()  # [batch_size,length,hidden_size]
+    #     sentiment_labels_hidden_length = tf.tile(tf.expand_dims(sentiment_labels_hidden, axis=1),
+    #                                              [1, input_seq_length, 1])
+    #     encoder_state_h = tf.reduce_sum(bert_final_state,axis=1) + sentiment_labels_hidden
+    #     encoder_state_seq=bert_final_state+sentiment_labels_hidden_length
 
     with tf.variable_scope("decoder"):
+
         beam_width=10
-
-
         rnn_layer_size=2
-        attention_mechanisms=[tf.contrib.seq2seq.LuongAttention(bert_config.hidden_size,encoder_state) for i in range(rnn_layer_size)]
-        rnn_cells = [tf.nn.rnn_cell.LSTMCell(bert_config.hidden_size) for i in range(rnn_layer_size)]
-        atten_rnn_cells=[tf.contrib.seq2seq.AttentionWrapper(rnn_cell,atte)for rnn_cell,atte in zip(rnn_cells,attention_mechanisms)]
-        mul_rnn_cell = tf.nn.rnn_cell.MultiRNNCell(atten_rnn_cells)
-        transformer2lstm_encode_state=tuple(state_zero.clone(encoder_state) for state_zero in mul_rnn_cell.zero_state(batch_size,tf.float32))
+        target_sequence_length = tf.cast(tf.count_nonzero(target_mask, axis=1), dtype=tf.int32)
+
+
+        # rnn_cells = [tf.nn.rnn_cell.BasicLSTMCell(bert_config.hidden_size) for i in range(rnn_layer_size)]
+        # mul_rnn_cell = tf.nn.rnn_cell.MultiRNNCell(rnn_cells)
+        mul_rnn_cell=tf.nn.rnn_cell.BasicLSTMCell(bert_config.hidden_size)
+        # encoder_state=tuple(tf.nn.rnn_cell.LSTMStateTuple(_rnn_state.c,encoder_state_h)for _rnn_state in mul_rnn_cell.zero_state(batch_size,dtype=tf.float32))
+
+
+        def _prepare_beam_search_decode_inputs(beam_width,memory,source_sequence_length,encoder_state):
+            memory=tf.contrib.seq2seq.tile_batch(memory, multiplier=beam_width)
+            source_sequence_length = tf.contrib.seq2seq.tile_batch(source_sequence_length, multiplier=beam_width)
+
+            # if isinstance(encoder_state,tuple) or isinstance(encoder_state):
+            #     #     deal multi_lstm state
+            #     tmp=[]
+            #     for lstm_state in encoder_state:
+            #         assert isinstance(lstm_state,tf.nn.rnn_cell.LSTMStateTuple)
+            #         tmp.append(tf.nn.rnn_cell.LSTMStateTuple(tf.contrib.seq2seq.tile_batch(lstm_state[0], multiplier=beam_width),
+            #                                                  tf.contrib.seq2seq.tile_batch(lstm_state[1],multiplier=beam_width)))
+            #         encoder_state = tuple(tmp)
+            # else:
+            encoder_state = tf.contrib.seq2seq.tile_batch(encoder_state, multiplier=beam_width)
+            return memory,source_sequence_length,encoder_state
+
+        if eval_mode == "beam_search" and mode==tf.estimator.ModeKeys.EVAL:
+            encoder_state_seq,input_sequence_length,encoder_state=_prepare_beam_search_decode_inputs(beam_width,
+                encoder_state_seq,input_sequence_length,encoder_state)
+
+
+        attention_mechanisms=tf.contrib.seq2seq.LuongAttention(bert_config.hidden_size,encoder_state_seq,memory_sequence_length=input_sequence_length,scale=True)
+        atten_rnn_cells=tf.contrib.seq2seq.AttentionWrapper(mul_rnn_cell,attention_mechanisms,
+                                                            attention_layer_size=None,
+                                                            output_attention=True)
+
+        cells=atten_rnn_cells
+
+
+        decoder_initial_state=cells.zero_state(batch_size=batch_size*beam_width,dtype=tf.float32)
+        # decoder_initial_state=encoder_state
+
+
 
         # Helper
         if mode == tf.estimator.ModeKeys.TRAIN or mode == tf.estimator.ModeKeys.EVAL:
+
             if mode==tf.estimator.ModeKeys.TRAIN:
-                target_embedding = tf.nn.embedding_lookup(model.embedding_table, target_token_ids)
-                target_sequence_length = tf.cast(tf.count_nonzero(target_mask, axis=1), dtype=tf.int32)
+                target_embedding = tf.nn.embedding_lookup(encoder_embedding, target_token_ids)
+
                 helper = tf.contrib.seq2seq.TrainingHelper(inputs=target_embedding,
                                                            sequence_length=tf.tile(
                                                                tf.constant([target_seq_length], shape=[1], dtype=tf.int32),
                                                                [batch_size]))
             else:
-                helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(embedding=model.embedding_table,
+                helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(embedding=encoder_embedding,
                                                                 start_tokens=tf.tile([target_start_ids], [batch_size]),
                                                                 end_token=target_end_ids)
+            if eval_mode=="beam_search" and mode==tf.estimator.ModeKeys.EVAL:
+                tf.logging.info("beam_search_eval")
 
-            decoder = tf.contrib.seq2seq.BasicDecoder(
-                cell=mul_rnn_cell,
-                helper=helper,
-                initial_state=transformer2lstm_encode_state,
-                output_layer=tf.layers.Dense(bert_config.vocab_size,
-                                             activation=modeling.get_activation(bert_config.hidden_act)))
+                decoder = tf.contrib.seq2seq.BeamSearchDecoder(
+                    cell=mul_rnn_cell,
+                    embedding=encoder_embedding,
+                    start_tokens=tf.tile([target_start_ids], [batch_size]),
+                    end_token=target_end_ids,
+                    initial_state=decoder_initial_state,
+                    beam_width=beam_width,
+                    output_layer=tf.layers.Dense(bert_config.vocab_size,
+                                                 activation=modeling.get_activation(bert_config.hidden_act))
+                )
+            else:
+
+                decoder = tf.contrib.seq2seq.BasicDecoder(
+                    cell=cells,
+                    helper=helper,
+                    initial_state=decoder_initial_state,
+                    output_layer=tf.layers.Dense(bert_config.vocab_size,
+                                                 activation=modeling.get_activation(bert_config.hidden_act)))
 
 
 
@@ -304,17 +375,12 @@ def create_model_lstm_attention(bert_config, is_training, input_token_ids, senti
             # helper = tf.contrib.seq2seq.SampleEmbeddingHelper(embedding=model.embedding_table,
             #                                                   start_tokens=tf.tile([target_start_ids], [batch_size]),
             #                                                   end_token=target_end_ids,softmax_temperature=0.5)
-            def state_tiled_batch(t):
-                return tf.contrib.seq2seq.tile_batch(t, multiplier=beam_width)
-
-            beam_search_state = tuple(state_tiled_batch(single_lstm_initial_state)
-                                      for single_lstm_initial_state in transformer2lstm_encode_state)
             decoder = tf.contrib.seq2seq.BeamSearchDecoder(
                 cell=mul_rnn_cell,
-                embedding=model.embedding_table,
+                embedding=encoder_embedding,
                 start_tokens=tf.tile([target_start_ids], [batch_size]),
                 end_token=target_end_ids,
-                initial_state=beam_search_state,
+                initial_state=decoder_initial_state,
                 beam_width=beam_width,
                 output_layer=tf.layers.Dense(bert_config.vocab_size,
                                              activation=modeling.get_activation(bert_config.hidden_act))
@@ -328,7 +394,7 @@ def create_model_lstm_attention(bert_config, is_training, input_token_ids, senti
 
     with tf.variable_scope("loss"):
         # [batch_size,length,hidden]
-        if mode != tf.estimator.ModeKeys.PREDICT:
+        if mode == tf.estimator.ModeKeys.TRAIN:
             logts = outputs.rnn_output
             sample_id = outputs.sample_id
             loss = tf.reduce_sum(
@@ -336,8 +402,19 @@ def create_model_lstm_attention(bert_config, is_training, input_token_ids, senti
                                                  average_across_timesteps=False,
                                                  average_across_batch=True))
             scores = None
-
-
+        elif mode == tf.estimator.ModeKeys.EVAL:
+            scores = None
+            if eval_mode=="beam_search":
+                logts=None
+                loss=tf.constant(0,dtype=tf.float32)
+                sample_id = outputs.predicted_ids[0]
+            else:
+                logts = outputs.rnn_output
+                sample_id = outputs.sample_id
+                loss = tf.reduce_sum(
+                    tf.contrib.seq2seq.sequence_loss(logts, target_token_ids, tf.cast(target_mask, dtype=tf.float32),
+                                                     average_across_timesteps=False,
+                                                     average_across_batch=True))
 
         else:
             sample_id = outputs.predicted_ids
@@ -352,6 +429,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
                      num_train_steps, num_warmup_steps, use_one_hot_embeddings,
                      input_seq_length, target_seq_length, target_start_ids, target_end_ids, batch_size,mode_type="lstm"):
     """Returns `model_fn` closure for Estimator."""
+    mode_type=mode_type.lower()
     def model_fn(features, labels, mode, params):
         tf.logging.info("*** Features ***")
         for name in sorted(features.keys()):
@@ -369,14 +447,16 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
             (loss, logts, sample_id,scores) = create_model_lstm_attention(bert_config, is_training, input_token_ids, sentiment_labels, input_mask,
                                                     segment_ids,
                                                     target_token_ids, target_mask, target_start_ids, target_end_ids
-                                                    , target_seq_length, mode, batch_size, use_one_hot_embeddings)
+                                                    , input_seq_length,target_seq_length, mode, batch_size, use_one_hot_embeddings)
 
-        else:
+        elif mode_type=="lstm":
             #lstm-nonattention
             (loss, logts, sample_id,scores) = create_model(bert_config, is_training, input_token_ids, sentiment_labels, input_mask,
                                                     segment_ids,
                                                     target_token_ids, target_mask, target_start_ids, target_end_ids
                                                     , target_seq_length, mode, batch_size, use_one_hot_embeddings)
+        else:
+            raise TypeError("None type with {} in ['lstm','lstm_attention']".format(mode_type))
 
         tvars = tf.trainable_variables()
         initialized_variable_names = {}
@@ -485,7 +565,7 @@ def main(args):
                                 target_start_ids=target_start_ids,
                                 target_end_ids=target_end_ids,
                                 batch_size=batch_size,
-                                mode_type=""
+                                mode_type=mode_type
                                 )
     estimator = tf.estimator.Estimator(
         model_fn=model_fn,

@@ -25,7 +25,7 @@ class CN_Token():
 
 
 cn_token=CN_Token()
-fulltoken=FullTokenizer(os.path.abspath("../../../chinese_L-12_H-768_A-12/vocab.txt"))
+fulltoken=FullTokenizer(os.path.abspath("../chinese_L-12_H-768_A-12/vocab.txt"))
 
 # return features
 def token_parse(p_value,string,maxtoken_length,maxTarget_length=20,returntype="list",):

@@ -495,6 +495,163 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     return model_fn
 
 
+
+
+def test_input_fn():
+    import numpy as np
+    from tokenization import FullTokenizer
+    file1="/home/hesheng/python_project/bert/token_test/data/data_sentiment_analysis/sentiment_analysis_trainingset.tf_record"
+    file2="/home/hesheng/python_project/bert/token_test/data/data_sentiment_analysis/sentiment_analysis_validationset.tf_record"
+    file3="/home/hesheng/python_project/bert/token_test/data/data_sentiment_analysis/predict.tf_record"
+    fulltoken=FullTokenizer("/home/hesheng/python_project/bert/chinese_L-12_H-768_A-12/vocab.txt")
+
+    fn=file_based_input_fn_builder(file3,128,10,is_training=False,drop_remainder=True)
+    dataset=fn(1)
+    iterator=dataset.make_initializable_iterator()
+    element=iterator.get_next()
+    with tf.Session() as sess:
+        sess.run(iterator.initializer)
+        i=0
+        while True:
+            i+=1
+            feature=sess.run(element)
+            # print("step:{0},target_mask :\n{1}".format(i,feature["input_token_ids"].shape))
+            print(fulltoken.convert_ids_to_tokens(np.squeeze(feature["input_token_ids"])))
+            print(fulltoken.convert_ids_to_tokens(np.squeeze(feature["target_token_ids"])))
+
+            break
+
+PARAMS = {
+    'embed_dims': 15,
+    'rnn_size': 50,
+    'num_layers': 1,
+    'beam_width': 5,
+    'clip_norm': 5.0,
+    'batch_size': 128,
+    'n_epochs': 60,
+    'src_char2idx':0,
+    'tgt_char2idx':1
+
+}
+
+def clip_grads(loss):
+    variables = tf.trainable_variables()
+    grads = tf.gradients(loss, variables)
+    clipped_grads, _ = tf.clip_by_global_norm(grads, PARAMS['clip_norm'])
+    return zip(clipped_grads, variables)
+
+
+def rnn_cell():
+    def cell_fn():
+        cell = tf.nn.rnn_cell.GRUCell(PARAMS['rnn_size'],
+                                      kernel_initializer=tf.orthogonal_initializer())
+        return cell
+
+    return tf.nn.rnn_cell.MultiRNNCell([cell_fn() for _ in range(PARAMS['num_layers'])])
+
+
+def dec_cell(enc_out, enc_seq_len):
+    attention = tf.contrib.seq2seq.BahdanauAttention(
+        num_units=PARAMS['rnn_size'],
+        memory=enc_out,
+        memory_sequence_length=enc_seq_len)
+
+    return tf.contrib.seq2seq.AttentionWrapper(
+        cell=rnn_cell(),
+        attention_mechanism=attention,
+        attention_layer_size=PARAMS['rnn_size'])
+
+
+def dec_input(labels):
+    x = tf.fill([tf.shape(labels)[0], 1], PARAMS['tgt_char2idx']['<GO>'])
+    x = tf.to_int32(x)
+    return tf.concat([x, labels[:, :-1]], 1)
+
+
+def forward(features, labels, mode):
+    inputs=features["input_token_ids"]
+    inputs_mask=features["input_mask"]
+    is_training = (mode == tf.estimator.ModeKeys.TRAIN)
+    enc_seq_len = tf.count_nonzero(inputs_mask, 1, dtype=tf.int32)
+    batch_sz = tf.shape(inputs)[0]
+    vocab_size=100
+    with tf.variable_scope('Encoder'):
+        embedding = tf.get_variable('lookup_table',
+                                    [vocab_size, PARAMS['embed_dims']])
+        x = tf.nn.embedding_lookup(embedding, inputs)
+        enc_out, enc_state = tf.nn.dynamic_rnn(rnn_cell(), x, enc_seq_len, dtype=tf.float32)
+
+    with tf.variable_scope('Decoder'):
+        output_proj = tf.layers.Dense(vocab_size)
+
+        if is_training:
+            cell = dec_cell(enc_out, enc_seq_len)
+            dec_seq_len = tf.count_nonzero(labels, 1, dtype=tf.int32)
+
+            init_state = cell.zero_state(batch_sz, tf.float32).clone(
+                cell_state=enc_state)
+
+            helper = tf.contrib.seq2seq.TrainingHelper(
+                inputs=tf.nn.embedding_lookup(embedding, dec_input(labels)),
+                sequence_length=dec_seq_len)
+            decoder = tf.contrib.seq2seq.BasicDecoder(
+                cell=cell,
+                helper=helper,
+                initial_state=init_state,
+                output_layer=output_proj)
+            decoder_output, _, _ = tf.contrib.seq2seq.dynamic_decode(
+                decoder=decoder,
+                maximum_iterations=tf.reduce_max(dec_seq_len))
+
+            return decoder_output.rnn_output
+        else:
+            enc_out_t = tf.contrib.seq2seq.tile_batch(enc_out, PARAMS['beam_width'])
+            enc_state_t = tf.contrib.seq2seq.tile_batch(enc_state, PARAMS['beam_width'])
+            enc_seq_len_t = tf.contrib.seq2seq.tile_batch(enc_seq_len, PARAMS['beam_width'])
+
+            cell = dec_cell(enc_out_t, enc_seq_len_t)
+
+            init_state = cell.zero_state(batch_sz * PARAMS['beam_width'], tf.float32).clone(
+                cell_state=enc_state_t)
+
+            decoder = tf.contrib.seq2seq.BeamSearchDecoder(
+                cell=cell,
+                embedding=embedding,
+                start_tokens=tf.tile(tf.constant([0], tf.int32),
+                                     [batch_sz]),
+                end_token=1,
+                initial_state=init_state,
+                beam_width=PARAMS['beam_width'],
+                output_layer=output_proj)
+            decoder_output, _, _ = tf.contrib.seq2seq.dynamic_decode(
+                decoder=decoder)
+
+            return decoder_output.predicted_ids[:, :, 0]
+def model_fn_test(features, labels, mode):
+    logits_or_ids = forward(features, labels, mode)
+
+    if mode == tf.estimator.ModeKeys.PREDICT:
+        return tf.estimator.EstimatorSpec(mode, predictions=logits_or_ids)
+
+    if mode == tf.estimator.ModeKeys.TRAIN:
+        loss_op = tf.contrib.seq2seq.sequence_loss(logits=logits_or_ids,
+                                                   targets=labels,
+                                                   weights=tf.to_float(tf.sign(labels)))
+        train_op = tf.train.AdamOptimizer().apply_gradients(
+            clip_grads(loss_op),
+            global_step=tf.train.get_global_step())
+
+        return tf.estimator.EstimatorSpec(
+            mode=mode, loss=loss_op, train_op=train_op)
+    if mode== tf.estimator.ModeKeys.EVAL:
+        loss_op = tf.contrib.seq2seq.sequence_loss(logits=logits_or_ids,
+                                                   targets=labels,
+                                                   weights=tf.to_float(tf.ones_like))
+        return tf.estimator.EstimatorSpec(
+            mode=mode, loss=loss_op)
+
+
+
 def main(args):
     from tokenization import FullTokenizer
     tf.logging.set_verbosity(tf.logging.INFO)
@@ -633,31 +790,6 @@ def main(args):
                 print("\n")
 
                 # writer.write(output_line)
-
-
-def test_input_fn():
-    import numpy as np
-    from tokenization import FullTokenizer
-    file1="/home/hesheng/python_project/bert/token_test/data/data_sentiment_analysis/sentiment_analysis_trainingset.tf_record"
-    file2="/home/hesheng/python_project/bert/token_test/data/data_sentiment_analysis/sentiment_analysis_validationset.tf_record"
-    file3="/home/hesheng/python_project/bert/token_test/data/data_sentiment_analysis/predict.tf_record"
-    fulltoken=FullTokenizer("/home/hesheng/python_project/bert/chinese_L-12_H-768_A-12/vocab.txt")
-
-    fn=file_based_input_fn_builder(file3,128,10,is_training=False,drop_remainder=True)
-    dataset=fn(1)
-    iterator=dataset.make_initializable_iterator()
-    element=iterator.get_next()
-    with tf.Session() as sess:
-        sess.run(iterator.initializer)
-        i=0
-        while True:
-            i+=1
-            feature=sess.run(element)
-            # print("step:{0},target_mask :\n{1}".format(i,feature["input_token_ids"].shape))
-            print(fulltoken.convert_ids_to_tokens(np.squeeze(feature["input_token_ids"])))
-            print(fulltoken.convert_ids_to_tokens(np.squeeze(feature["target_token_ids"])))
-
-            break
 
 
 if __name__ == "__main__":

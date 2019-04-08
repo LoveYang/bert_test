@@ -29,14 +29,14 @@ flags.DEFINE_string("vocab_file", "./chinese_L-12_H-768_A-12/vocab.txt",
                     "The vocabulary file that the BERT model was trained on.")
 
 flags.DEFINE_string(
-    "output_dir", "./token_test/output_sentiment_generate_dir",
+    "output_dir", "./token_test/output_sentiment_generate_withoutInit_dir",
     "The output directory where the model checkpoints will be written.")
 
 ## Other parameters
 
 # "./chinese_L-12_H-768_A-12/bert_model.ckpt",
 flags.DEFINE_string(
-    "init_checkpoint", "./chinese_L-12_H-768_A-12/bert_model.ckpt",
+    "init_checkpoint", None,
     "Initial checkpoint (usually from a pre-trained BERT model).")
 
 flags.DEFINE_bool(
@@ -967,7 +967,7 @@ def main(args):
         batch_size = FLAGS.predict_batch_size
 
     model_fn = model_fn_builder(bert_config,
-                                init_checkpoint=os.path.abspath(FLAGS.init_checkpoint),
+                                init_checkpoint=os.path.abspath(FLAGS.init_checkpoint) if FLAGS.init_checkpoint is not None else None,
                                 learning_rate=FLAGS.learning_rate,
                                 num_train_steps=num_train_steps,
                                 num_warmup_steps=num_warmup_steps,
